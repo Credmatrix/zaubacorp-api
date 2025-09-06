@@ -15,14 +15,14 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 import httpx
 from models import CompanySearchResponse, CompanyDataResponse
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
 try:
     from zaubacorp_lib import (
-        ZaubaCorpClient,
+        ZaubaCorpClient,  # Use sync wrapper
         SearchFilter,
         CompanySearchResult,
         CompanyData,
@@ -194,6 +194,18 @@ async def get_company_data(company_id: str):
             status_code=500,
             detail="Internal server error during data extraction"
         )
+
+# Cleanup on shutdown
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up resources on shutdown"""
+    if zauba_client:
+        try:
+            zauba_client.close()
+        except:
+            pass
 
 # =============================================================================
 # MAIN

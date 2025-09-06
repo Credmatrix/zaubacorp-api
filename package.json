@@ -1,0 +1,5 @@
+{
+	"scripts": {
+		"build": "pip install playwright && playwright install chromium"
+	}
+}
