@@ -2,179 +2,118 @@
 # zaubacorp_lib/client.py
 # ============================================================================
 
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, WebDriverException
-from webdriver_manager.chrome import ChromeDriverManager
-
+import requests
+import urllib.request
+import urllib.parse
 from bs4 import BeautifulSoup
 import re
 import time
 from typing import List, Dict, Optional
-import atexit
 
 from .models import SearchFilter, CompanySearchResult, CompanyData
 from .exceptions import ZaubaCorpError, SearchError, ExtractionError, NetworkError
 
 
 class ZaubaCorpClient:
-    """ZaubaCorp client for searching companies and extracting data using headless Chrome"""
+    """ZaubaCorp client for searching companies and extracting data"""
 
-    def __init__(self, delay_between_requests: float = 2.0, headless: bool = True):
-        """Initialize ZaubaCorp client with headless Chrome"""
+    def __init__(self, delay_between_requests: float = 1.0):
+        """Initialize ZaubaCorp client"""
         self.base_url = "https://www.zaubacorp.com"
         self.delay = delay_between_requests
-        self.headless = headless
-        self.driver = None
-        self._setup_driver()
+        self.session = requests.Session()
 
-        # Register cleanup on exit
-        atexit.register(self.close)
+        # Set headers to mimic browser requests
+        self.session.headers.update({
+            'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
+            'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"macOS"',
+            'Cookie': 'ZCSESSID=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1dWlkIjoiIiwiYW5vbnltb3VzX3V1aWQiOiIwOWEyOGIyYS1lYzkwLTQ2MzEtYWIxNS02YmEwMzY1Yzk0ZTAiLCJleHAiOjE3NTc3MjY2MjV9.KvcyWkqm_pSH7R3CqJTj3i3WnN0aH-rqrmrxvbxE6Y0; cf_clearance=D8lc3AW6Taig_HH5mFxyHkf6rFP01y_8tXTzzxs.Rok-1757152122-1.2.1.1-7ZqY1m4FWu8UUm35rIjvvJLgDn1vt_7Syn7RvQRAidy4F.GdXv0vFSLC72u128chTrfjBYfD2cRyFZh1mcs3W28E1yzQcYHdKWXWTJ7CwVCr80SuKlQAsrc7tHcupCJttX3xQYGlW1lzPUs8x4TLynd.zs1BPw8Tclh3rZgzX_huCupRuJRecKkHLEsyDY3b4wR3wGwH2HN1i4cTlCQCMtfFpiWf6xjSCU9V5Kc5KpI'
+        })
 
-    def _setup_driver(self):
-        """Setup Chrome WebDriver with optimal settings"""
+    def _search_companies_urllib(self, query: str, filter_type: SearchFilter = SearchFilter.COMPANY) -> Optional[str]:
+        """Alternative search method using urllib for typeahead API"""
         try:
-            chrome_options = Options()
+            url = f"{self.base_url}/typeahead"
 
-            if self.headless:
-                chrome_options.add_argument("--headless")
-
-            # Essential arguments to avoid detection
-            chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            chrome_options.add_argument(
-                "--disable-blink-features=AutomationControlled")
-            chrome_options.add_experimental_option(
-                "excludeSwitches", ["enable-automation"])
-            chrome_options.add_experimental_option(
-                'useAutomationExtension', False)
-
-            # Set window size
-            chrome_options.add_argument("--window-size=1920,1080")
-
-            # Disable images and CSS for faster loading (optional)
-            prefs = {
-                "profile.managed_default_content_settings.images": 2,
-                "profile.default_content_setting_values.notifications": 2,
-                "profile.managed_default_content_settings.stylesheets": 2,
+            # Prepare form data
+            data = {
+                'search': query,
+                'filter': filter_type.value
             }
-            chrome_options.add_experimental_option("prefs", prefs)
 
-            # Additional stealth arguments
-            chrome_options.add_argument("--disable-extensions")
-            chrome_options.add_argument("--disable-plugins")
-            chrome_options.add_argument("--disable-gpu")
-            chrome_options.add_argument("--disable-web-security")
-            chrome_options.add_argument("--allow-running-insecure-content")
-            chrome_options.add_argument("--no-first-run")
-            chrome_options.add_argument("--disable-notifications")
-            chrome_options.add_argument("--disable-default-apps")
-            chrome_options.add_argument("--disable-popup-blocking")
+            # Encode the data
+            encoded_data = urllib.parse.urlencode(data).encode('utf-8')
 
-            # Set user agent
-            user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            chrome_options.add_argument(f"--user-agent={user_agent}")
+            # Create request
+            req = urllib.request.Request(url, data=encoded_data, method='POST')
 
-            # Setup service with ChromeDriverManager
-            service = Service(ChromeDriverManager().install())
+            # Add headers to match working curl command
+            req.add_header(
+                'user-agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36')
+            req.add_header(
+                'Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8')
+            req.add_header('Accept-Language', 'en-US,en;q=0.9')
+            req.add_header('Accept-Encoding', 'gzip, deflate')
+            req.add_header('Content-Type', 'application/x-www-form-urlencoded')
+            req.add_header('DNT', '1')
+            req.add_header('Connection', 'keep-alive')
+            req.add_header('Cache-Control', 'max-age=0')
+            req.add_header('Cookie', 'ZCSESSID=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1dWlkIjoiIiwiYW5vbnltb3VzX3V1aWQiOiIwOWEyOGIyYS1lYzkwLTQ2MzEtYWIxNS02YmEwMzY1Yzk0ZTAiLCJleHAiOjE3NTc3MjY2MjV9.KvcyWkqm_pSH7R3CqJTj3i3WnN0aH-rqrmrxvbxE6Y0; cf_clearance=D8lc3AW6Taig_HH5mFxyHkf6rFP01y_8tXTzzxs.Rok-1757152122-1.2.1.1-7ZqY1m4FWu8UUm35rIjvvJLgDn1vt_7Syn7RvQRAidy4F.GdXv0vFSLC72u128chTrfjBYfD2cRyFZh1mcs3W28E1yzQcYHdKWXWTJ7CwVCr80SuKlQAsrc7tHcupCJttX3xQYGlW1lzPUs8x4TLynd.zs1BPw8Tclh3rZgzX_huCupRuJRecKkHLEsyDY3b4wR3wGwH2HN1i4cTlCQCMtfFpiWf6xjSCU9V5Kc5KpI')
 
-            # Create driver
-            self.driver = webdriver.Chrome(
-                service=service, options=chrome_options)
-
-            # Execute script to remove webdriver property
-            self.driver.execute_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-
-            # Set timeouts
-            self.driver.set_page_load_timeout(30)
-            self.driver.implicitly_wait(10)
-
+            with urllib.request.urlopen(req, timeout=30) as response:
+                if response.code == 200:
+                    content = response.read()
+                    # Handle gzip encoding if present
+                    if response.headers.get('Content-Encoding') == 'gzip':
+                        import gzip
+                        content = gzip.decompress(content)
+                    return content.decode('utf-8')
+                else:
+                    return None
         except Exception as e:
-            raise ZaubaCorpError(f"Failed to setup Chrome driver: {str(e)}")
-
-    def _wait_and_get_page_source(self, url: str, wait_element: str = None, timeout: int = 15) -> str:
-        """Navigate to URL and get page source with optional element wait"""
-        try:
-            self.driver.get(url)
-
-            if wait_element:
-                try:
-                    WebDriverWait(self.driver, timeout).until(
-                        EC.presence_of_element_located(
-                            (By.CSS_SELECTOR, wait_element))
-                    )
-                except TimeoutException:
-                    pass  # Continue anyway, maybe the content loaded
-
-            # Small delay to ensure page is fully loaded
-            time.sleep(1)
-
-            return self.driver.page_source
-
-        except WebDriverException as e:
-            raise NetworkError(f"Failed to load page {url}: {str(e)}")
-
-    def _search_companies_selenium(self, query: str, filter_type: SearchFilter = SearchFilter.COMPANY) -> Optional[str]:
-        """Search using Selenium by posting to typeahead endpoint"""
-        try:
-            # First visit the main page to establish session
-            self.driver.get(self.base_url)
-            time.sleep(1)
-
-            # Execute JavaScript to make the POST request
-            script = f"""
-            return fetch('{self.base_url}/typeahead', {{
-                method: 'POST',
-                headers: {{
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Cache-Control': 'max-age=0',
-                    'DNT': '1'
-                }},
-                body: 'search=' + encodeURIComponent(arguments[0]) + '&filter=' + arguments[1]
-            }}).then(response => response.text());
-            """
-
-            result = self.driver.execute_async_script(f"""
-            var callback = arguments[arguments.length - 1];
-            fetch('{self.base_url}/typeahead', {{
-                method: 'POST',
-                headers: {{
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                }},
-                body: 'search={query}&filter={filter_type.value}'
-            }})
-            .then(response => response.text())
-            .then(data => callback(data))
-            .catch(error => callback(null));
-            """)
-
-            return result
-
-        except Exception as e:
-            print(f"Selenium search error: {e}")
+            print(f"urllib search error: {e}")
             return None
 
     def search_companies(self,
                          query: str,
                          filter_type: SearchFilter = SearchFilter.COMPANY,
                          max_results: Optional[int] = None) -> List[CompanySearchResult]:
-        """Search for companies using headless Chrome"""
+        """Search for companies using typeahead API"""
         try:
             time.sleep(self.delay)
 
-            response_text = self._search_companies_selenium(query, filter_type)
+            # Try urllib method first (working method)
+            response_text = self._search_companies_urllib(query, filter_type)
 
             if not response_text:
-                raise NetworkError("Failed to get search results")
+                # Fallback to requests session if urllib fails
+                try:
+                    url = f"{self.base_url}/typeahead"
+                    data = {
+                        'search': query,
+                        'filter': filter_type.value
+                    }
+
+                    response = self.session.post(url, data=data, timeout=30)
+                    response.raise_for_status()
+                    response_text = response.text
+
+                except requests.exceptions.RequestException as e:
+                    raise NetworkError(
+                        f"Both urllib and requests search methods failed. Last error: {str(e)}")
 
             # Parse HTML response
             soup = BeautifulSoup(response_text, 'html.parser')
@@ -276,20 +215,46 @@ class ZaubaCorpClient:
 
         return rc_sections
 
-    def _fetch_html_selenium(self, company_id: str) -> Optional[str]:
-        """Fetch HTML using Selenium"""
+    def _fetch_html_urllib(self, company_id: str) -> Optional[str]:
+        """Alternative method using urllib for fetching HTML"""
         try:
             url = f"{self.base_url}/{company_id}"
-            return self._wait_and_get_page_source(url, wait_element="div.rc")
+
+            req = urllib.request.Request(url)
+            req.add_header(
+                'User-Agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36')
+            req.add_header(
+                'Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8')
+            req.add_header('Accept-Language', 'en-US,en;q=0.9')
+            req.add_header('Accept-Encoding', 'gzip, deflate')
+            req.add_header('DNT', '1')
+            req.add_header('Connection', 'keep-alive')
+            req.add_header('Upgrade-Insecure-Requests', '1')
+            req.add_header('Cookie', 'ZCSESSID=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1dWlkIjoiIiwiYW5vbnltb3VzX3V1aWQiOiIwOWEyOGIyYS1lYzkwLTQ2MzEtYWIxNS02YmEwMzY1Yzk0ZTAiLCJleHAiOjE3NTc3MjY2MjV9.KvcyWkqm_pSH7R3CqJTj3i3WnN0aH-rqrmrxvbxE6Y0; cf_clearance=D8lc3AW6Taig_HH5mFxyHkf6rFP01y_8tXTzzxs.Rok-1757152122-1.2.1.1-7ZqY1m4FWu8UUm35rIjvvJLgDn1vt_7Syn7RvQRAidy4F.GdXv0vFSLC72u128chTrfjBYfD2cRyFZh1mcs3W28E1yzQcYHdKWXWTJ7CwVCr80SuKlQAsrc7tHcupCJttX3xQYGlW1lzPUs8x4TLynd.zs1BPw8Tclh3rZgzX_huCupRuJRecKkHLEsyDY3b4wR3wGwH2HN1i4cTlCQCMtfFpiWf6xjSCU9V5Kc5KpI')
+
+            with urllib.request.urlopen(req, timeout=30) as response:
+                if response.code == 200:
+                    content = response.read()
+                    if response.headers.get('Content-Encoding') == 'gzip':
+                        import gzip
+                        content = gzip.decompress(content)
+                    return content.decode('utf-8')
+                else:
+                    return None
         except Exception:
             return None
+
+    def _fetch_html(self, company_id: str) -> Optional[str]:
+        """Fetch HTML content for a company"""
+        try:
+            return self._fetch_html_urllib(company_id)
+        except requests.exceptions.RequestException:
+            return self._fetch_html_urllib(company_id)
 
     def get_company_data(self, company_id: str) -> CompanyData:
         """Get complete company data by company ID"""
         try:
-            time.sleep(self.delay)
-
-            html_content = self._fetch_html_selenium(company_id)
+            html_content = self._fetch_html(company_id)
             if not html_content:
                 return CompanyData(
                     company_id=company_id,
@@ -343,47 +308,3 @@ class ZaubaCorpClient:
         except Exception as e:
             raise ZaubaCorpError(
                 f"Search and data extraction failed: {str(e)}")
-
-    def close(self):
-        """Close the WebDriver"""
-        if self.driver:
-            try:
-                self.driver.quit()
-            except:
-                pass
-            self.driver = None
-
-    def __enter__(self):
-        """Context manager entry"""
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit"""
-        self.close()
-
-
-# Example usage and testing
-if __name__ == "__main__":
-    # You can test the client like this:
-    with ZaubaCorpClient(delay_between_requests=3.0) as client:
-        try:
-            # Search for companies
-            results = client.search_companies("Reliance", max_results=3)
-            print(f"Found {len(results)} companies")
-
-            for result in results:
-                print(f"- {result.name} ({result.id})")
-
-                # Get detailed data for first result
-                if result == results[0]:
-                    company_data = client.get_company_data(result.id)
-                    if company_data.success:
-                        print(f"Successfully extracted data for {result.name}")
-                        print(
-                            f"Found {len(company_data.rc_sections)} sections")
-                    else:
-                        print(
-                            f"Failed to extract data: {company_data.error_message}")
-
-        except Exception as e:
-            print(f"Error: {e}")
